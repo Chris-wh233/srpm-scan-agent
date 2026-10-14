@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("event", choices=("started", "completed", "failed"))
+    parser.add_argument("--srpm-name", required=True)
+    parser.add_argument("--event-time")
+    parser.add_argument("--csmock-exit-code", type=int)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    portal_url = os.environ["SCAN_RESULTS_PORTAL_URL"].rstrip("/")
+    token = os.environ["SCAN_SERVICE_INGEST_TOKEN"]
+    event_time = args.event_time or datetime.now(timezone.utc).isoformat()
+    payload = {
+        "event": args.event,
+        "jenkins_build_number": int(os.environ["BUILD_NUMBER"]),
+        "jenkins_job_full_name": os.environ["JOB_NAME"],
+        "srpm_name": args.srpm_name,
+    }
+    payload["created_at" if args.event == "started" else "finished_at"] = event_time
+    if args.csmock_exit_code is not None:
+        payload["csmock_exit_code"] = args.csmock_exit_code
+
+    request = Request(
+        f"{portal_url}/api/v1/srpm/events",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            print(response.read().decode("utf-8"))
+    except HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        print(f"Scan Results Portal rejected event (HTTP {error.code}): {body}", file=sys.stderr)
+        raise SystemExit(22) from error
+    except URLError as error:
+        print(f"Unable to contact Scan Results Portal: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# 调度一次性 csmock 容器完成一次 SRPM 扫描。
+#
+# 设计要点：
+# · **不挂载宿主 mock 目录**：每个容器使用自己的 /var/lib/mock，mock 的
+#   buildroot.lock 因此落在各自容器的文件系统里，多个扫描可以并发。
+#   （若多个扫描共享同一个 mock 目录，mock 会用该锁互斥，第二个扫描直接失败。）
+# · 通过挂进来的 /var/run/docker.sock 调用宿主 Docker；
+#
+# 用法：
+#   run-srpm-scan SRPM_NAME [OUTPUT_DIR]
+#     SRPM_NAME   待扫描的 .src.rpm 文件名
+#     OUTPUT_DIR  相对 agent 工作目录的输出目录，默认 srpm-scan-artifacts
+#   run-srpm-scan --dry-run SRPM_NAME [OUTPUT_DIR]
+#     只打印将要执行的 docker 命令，不做任何实际操作
+#
+# 退出码：
+#   2    参数/配置错误，或输入文件不存在
+#   其它 一次性 csmock 容器的退出码（csmock 正常结束返回 0，包含发现缺陷的情况）
+
+set -euo pipefail
+
+dry_run=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  dry_run=1
+  shift
+fi
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: run-srpm-scan [--dry-run] SRPM_NAME [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+srpm_name=$1
+output_dir=${2:-srpm-scan-artifacts}
+
+: "${SRPM_SCAN_INPUT_HOST_PATH:?SRPM_SCAN_INPUT_HOST_PATH is required}"
+: "${SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH:?SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH is required}"
+: "${CSMOCK_IMAGE:?CSMOCK_IMAGE is required}"
+: "${MOCK_CONFIG:?MOCK_CONFIG is required}"
+
+agent_workdir="${JENKINS_AGENT_WORKDIR:-/home/jenkins/agent}"
+input_container_dir="/scan-input"
+
+nvr=${srpm_name%.src.rpm}
+# 传给 docker -v 的是宿主路径；脚本自己访问文件则用容器内路径
+input_container="$input_container_dir/$srpm_name"
+input_host="$SRPM_SCAN_INPUT_HOST_PATH/$srpm_name"
+
+# 输出目录：容器内路径 -> 宿主机路径
+abs_output=$(realpath -m "$output_dir")
+case "$abs_output" in
+  "$agent_workdir"/*)
+    relative_output="${abs_output#"$agent_workdir"/}"
+    ;;
+  *)
+    echo "输出目录必须位于 agent 工作目录 $agent_workdir 内：$output_dir" >&2
+    exit 2
+    ;;
+esac
+host_output="$SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH/$relative_output"
+container_output="/output/$relative_output"
+
+csmock_tools_opt=()
+if [[ -n "${CSMOCK_TOOLS:-}" ]]; then
+  csmock_tools_opt=(-t "$CSMOCK_TOOLS")
+fi
+
+# 容器名带上构建号与 PID：不同扫描（含同名 SRPM 的并发扫描）互不冲突
+container_name="csmock-$(printf '%s' "$nvr" | tr -c 'a-zA-Z0-9_.-' '-')-${BUILD_NUMBER:-manual}-$$"
+
+run_cmd=(
+  docker run --rm
+  --name "$container_name"
+  --cap-add=SYS_ADMIN
+  -v "$SRPM_SCAN_INPUT_HOST_PATH:/input:ro"
+  -v "$SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH:/output"
+  "$CSMOCK_IMAGE"
+  sh -c "set -e
+    csmock -r '$MOCK_CONFIG' ${csmock_tools_opt[*]:-} --force -o '$container_output/$nvr.tar.xz' '/input/$srpm_name'
+    sudo chown -R $(id -u):$(id -g) '$container_output'"
+)
+
+if [[ "$dry_run" == "1" ]]; then
+  printf '%q ' "${run_cmd[@]}"
+  printf '\n'
+  exit 0
+fi
+
+if [[ ! -s "$input_container" ]]; then
+  echo "找不到待扫描的 SRPM：$input_container（宿主机目录 $SRPM_SCAN_INPUT_HOST_PATH）" >&2
+  exit 2
+fi
+
+mkdir -p "$abs_output"
+
+# 中断（含 Jenkins 中止构建）时清理可能残留的一次性容器
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT INT TERM
+
+"${run_cmd[@]}"
+
+echo "SRPM 扫描产物：$host_output/$nvr.tar.xz"
