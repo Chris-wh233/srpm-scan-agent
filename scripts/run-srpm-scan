@@ -74,6 +74,7 @@ run_cmd=(
   docker run --rm
   --name "$container_name"
   --cap-add=SYS_ADMIN
+  --group-add "$(id -g)"
   -v "$SRPM_SCAN_INPUT_HOST_PATH:/input:ro"
   -v "$SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH:/output"
   "$CSMOCK_IMAGE"
@@ -94,6 +95,9 @@ if [[ ! -s "$input_container" ]]; then
 fi
 
 mkdir -p "$abs_output"
+# csmock 容器以 builder(1000) 运行；agent 用户可能不是 1000，因此让输出目录
+# 组可写并带 setgid，配合上面的 --group-add 让 builder 能写入。
+chmod 2775 "$abs_output"
 
 # 中断（含 Jenkins 中止构建）时清理可能残留的一次性容器
 trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT INT TERM
