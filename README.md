@@ -9,7 +9,7 @@ LoongArch64 Jenkins inbound agent，用 `csmock` 扫描源码包（SRPM）。
 
 ~~~text
 SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH    agent 工作目录，挂到容器 /home/jenkins/agent
-SRPM_SCAN_INPUT_HOST_PATH              待扫描 RPM，只读挂到容器 /scan-input
+SRPM_SCAN_INPUT_HOST_PATH              待扫描 SRPM，只读挂到容器 /scan-input
 ~~~
 
 ## 设计：调度型 agent + 一次性扫描容器
@@ -57,3 +57,6 @@ docker compose up -d --build srpm-scan-agent
 ## Jenkins 侧
 
 在 Jenkins 上创建 permanent agent srpm-scan-agent-01，标签为 srpm-scan， 并把其 inbound-agent secret 写入 scan-service/.env 的 `SRPM_SCAN_AGENT_SECRET`。
+
+Pipeline 参数 `SRPM_NAME` 只填写完整 SRPM 文件名，不包含目录；`run-srpm-scan`
+会在只读挂载目录 `/scan-input` 下解析该文件。

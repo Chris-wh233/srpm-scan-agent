@@ -35,6 +35,18 @@ fi
 srpm_name=$1
 output_dir=${2:-srpm-scan-artifacts}
 
+case "$srpm_name" in
+  ''|.|..|*/*)
+    echo "SRPM_NAME must be a file name without path components: $srpm_name" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$srpm_name" != *.src.rpm ]]; then
+  echo "SRPM_NAME must end with .src.rpm: $srpm_name" >&2
+  exit 2
+fi
+
 : "${SRPM_SCAN_INPUT_HOST_PATH:?SRPM_SCAN_INPUT_HOST_PATH is required}"
 : "${SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH:?SRPM_SCAN_AGENT_WORKSPACE_HOST_PATH is required}"
 : "${CSMOCK_IMAGE:?CSMOCK_IMAGE is required}"
