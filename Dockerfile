@@ -18,6 +18,7 @@ RUN printf '%s\n' \
       coreutils \
       curl \
       gzip \
+      python3 \
       tar \
       util-linux \
       xz-utils && \
